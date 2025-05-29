@@ -103,5 +103,5 @@ Options:
 ## Execution
 
 ```
-gfaffix -c examples/example1.gfa -o example1.gfa > example1.gfaffixed.gfa
+gfaffix -c examples/example1.gfa > example1.gfaffixed.gfa
 ```
