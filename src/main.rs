@@ -315,6 +315,14 @@ fn collapse(
             n_dont_collapse_nodes += 1;
         }
         if v_len > prefix_len {
+
+            //
+            // remembering self- and hairipin-loops
+            //
+            let v_has_selfloop = graph.has_edge(*v, *v);
+            let v_has_hairpin_left = graph.has_edge(v.flip(), *v);
+            let v_has_hairpin_right = graph.has_edge(*v, v.flip());
+
             // x corresponds to the shared prefix,
             let (x, u) = if v.is_reverse() {
                 // apparently, rs-handlegraph does not allow splitting nodes in reverse direction
@@ -323,6 +331,23 @@ fn collapse(
             } else {
                 graph.split_handle(*v, prefix_len)
             };
+            //
+            // I'm sure some of these cases are already taken care of by the default handling of
+            // outgoing edges
+            //
+            if v_has_selfloop && !graph.has_edge(u, x) {
+                graph.create_edge(Edge::edge_handle(u, x));
+                log::debug!("recover self-loop edge {}{} -> {}{}", v2str(&v), v2str(&v), v2str(&u), v2str(&x));
+            }
+            if v_has_hairpin_left && !graph.has_edge(x.flip(), x) {
+                graph.create_edge(Edge::edge_handle(x.flip(), x));
+                log::debug!("recover left-sided hairpin edge {}{} -> {}{}", v2str(&v.flip()), v2str(&v), v2str(&x.flip()), v2str(&x));
+            }
+            if v_has_hairpin_right && !graph.has_edge(u, u.flip()) {
+                graph.create_edge(Edge::edge_handle(u, u.flip()));
+                log::debug!("recover right-sided hairpin edge {}{} -> {}{}", v2str(&v.flip()), v2str(&v), v2str(&u), v2str(&u.flip()));
+            }
+
             // update dedicated shared prefix node if none has been assigned yet
             log::debug!(
                 "splitting node {} into prefix {} and suffix {}",
