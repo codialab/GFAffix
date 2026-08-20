@@ -6,7 +6,7 @@
 
 GFAffix identifies walk-preserving shared affixes in variation graphs and collapses them into a non-redundant graph structure.
 
-# Dependencies
+# Build dependencies
 
 `GFAffix` is written in RUST and requires a working RUST build system for installation. See [https://www.rust-lang.org/tools/install](https://www.rust-lang.org/tools/install) for more details. 
 
