@@ -1144,16 +1144,23 @@ fn parse_header<R: io::Read>(mut data: io::BufReader<R>) -> Result<Vec<u8>, io::
 
 fn parse_gfa_v12<R: io::Read>(
     data: io::BufReader<R>,
-) -> (GFA<usize, ()>, FxHashMap<Vec<u8>, Vec<u8>>) {
+) -> Result<(GFA<usize, ()>, FxHashMap<Vec<u8>, Vec<u8>>), io::Error> {
     let parser = GFAParser::new();
 
     let mut walks = FxHashMap::default();
     let lines: Vec<Vec<u8>> = ByteLineReader::new(data)
         .map(|x| transform_walks(x, &mut walks))
         .collect();
-    let gfa: GFA<usize, ()> = parser.parse_lines(lines.iter().map(|x| &x[..])).unwrap();
+    let gfa: GFA<usize, ()> = parser
+        .parse_lines(lines.iter().map(|x| &x[..]))
+        .map_err(|e| {
+            io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!("could not load GFA: {}; gfaffix only supports numeric node identifiers", e),
+            )
+        })?;
 
-    (gfa, walks)
+    Ok((gfa, walks))
 }
 
 fn main() -> Result<(), io::Error> {
@@ -1198,7 +1205,7 @@ fn main() -> Result<(), io::Error> {
         Box::new(f)
     };
 
-    let (mut gfa, walks) = parse_gfa_v12(io::BufReader::new(reader));
+    let (mut gfa, walks) = parse_gfa_v12(io::BufReader::new(reader))?;
 
     //
     // REMOVING PATHS FROM GRAPH -- they SUBSTANTIALLY slow down graph editing
@@ -1373,4 +1380,26 @@ fn main() -> Result<(), io::Error> {
     graph_out.flush()?;
     log::info!("done");
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parse_gfa_v12_errors_on_non_numeric_node_ids() {
+        // hifiasm emits alphanumeric segment names such as "utg000001l",
+        // which the numeric handlegraph backend cannot represent. Loading
+        // such a graph should surface a clean error rather than panicking.
+        let gfa = b"H\tVN:Z:1.0\nS\tutg000001l\tACGT\n";
+        let result = parse_gfa_v12(io::BufReader::new(&gfa[..]));
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn parse_gfa_v12_accepts_numeric_node_ids() {
+        let gfa = b"H\tVN:Z:1.0\nS\t1\tACGT\nS\t2\tTTGA\nL\t1\t+\t2\t+\t0M\n";
+        let result = parse_gfa_v12(io::BufReader::new(&gfa[..]));
+        assert!(result.is_ok());
+    }
 }
