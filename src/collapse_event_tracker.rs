@@ -252,6 +252,7 @@ impl<'a> CollapseEventTracker<'a> {
         res
     }
 
+    #[allow(dead_code)] // de-collapse API, not called yet
     pub fn get_locus_tags(&self) -> FxHashMap<Node, Vec<Node>> {
         // a locus_tag is a rule key that corresponds to the original locus of the collapsed
         // node-sequence (rule value)
@@ -276,6 +277,7 @@ impl<'a> CollapseEventTracker<'a> {
         res
     }
 
+    #[allow(dead_code)] // de-collapse API, not called yet
     pub fn get_collapsed_nodes(&self) -> Vec<(Node, Node)> {
         // returns a list of (duplicated node, rule)-tuples that are sorted in the order in which the de-collapse must be carried out
 
@@ -371,6 +373,7 @@ impl<'a> CollapseEventTracker<'a> {
         res
     }
 
+    #[allow(dead_code)] // de-collapse API, not called yet
     pub fn decollapse(
         &mut self,
         graph: &mut HashGraph,
@@ -555,6 +558,7 @@ impl<'a> CollapseEventTracker<'a> {
         res
     }
 
+    #[allow(dead_code)] // de-collapse API, not called yet
     fn decollapse_prefix(
         &self,
         u: OrientedNode,
@@ -605,6 +609,7 @@ impl<'a> CollapseEventTracker<'a> {
         w
     }
 
+    #[allow(dead_code)] // de-collapse API, not called yet
     pub fn decollapse_blunt_node(
         &self,
         v: OrientedNode,
