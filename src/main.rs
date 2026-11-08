@@ -37,7 +37,6 @@ use deleted_sub_graph::*;
 mod walk_transform;
 use walk_transform::*;
 
-const EXPLORE_NEIGHBORHOOD: usize = 2;
 type FxIndexMap<K, V> = IndexMap<K, V, FxBuildHasher>;
 type FxIndexSet<V> = IndexSet<V, FxBuildHasher>;
 
@@ -535,56 +534,6 @@ fn get_shared_prefix(
     }
 
     String::from_utf8(seq)
-}
-
-fn find_walk_preserving_shared_affixes(
-    graph: &HashGraph,
-    del_subg: &DeletedSubGraph,
-    nodes: Vec<Handle>,
-) -> Vec<AffixSubgraph> {
-    nodes
-        .par_iter()
-        .filter_map(|v| {
-            if !del_subg.node_deleted(v) {
-                Some(enumerate_walk_preserving_shared_affixes(graph, del_subg, *v).unwrap())
-            } else {
-                None
-            }
-        })
-        .flatten()
-        .collect()
-}
-
-fn find_affected_nodes(graph: &HashGraph, del_subg: &DeletedSubGraph, v: Handle) -> Vec<Handle> {
-    let mut queue: Vec<(usize, Handle)> = vec![(0, v)];
-
-    let mut visited = FxHashSet::default();
-
-    let mut res = Vec::new();
-
-    while let Some((d, v)) = queue.pop() {
-        if !del_subg.node_deleted(&v) && !visited.contains(&v.forward()) {
-            visited.insert(v.forward());
-            res.push(v);
-            res.push(v.flip());
-            if d < EXPLORE_NEIGHBORHOOD {
-                queue.extend(
-                    graph
-                        .neighbors(v, Direction::Right)
-                        .chain(graph.neighbors(v, Direction::Left))
-                        .filter_map(|u| {
-                            if !visited.contains(&u.forward()) {
-                                Some((d + 1, u.forward()))
-                            } else {
-                                None
-                            }
-                        }),
-                );
-            }
-        }
-    }
-
-    res
 }
 
 fn find_collapsible_blunt_end_pair(

@@ -16,6 +16,7 @@ impl DeletedSubGraph {
         }
     }
 
+    #[allow(dead_code)] // kept with add_node for API symmetry
     pub fn add_edge(&mut self, e: Edge) -> bool {
         self.edges.insert(e)
     }
