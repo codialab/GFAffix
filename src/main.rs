@@ -12,9 +12,9 @@ use clap::{crate_version, Parser};
 use env_logger::Env;
 use flate2::{read::MultiGzDecoder, write::GzEncoder, Compression};
 use gfa::{
-    gfa::{orientation::Orientation, GFA},
+    gfa::{orientation::Orientation, GFA, Line},
     optfields::OptFields,
-    parser::GFAParser,
+    parser::{GFAParser, error::ParserTolerance},
 };
 use handlegraph::{
     handle::{Direction, Edge, Handle},
@@ -867,7 +867,7 @@ fn print_active_subgraph<W: io::Write>(
 }
 
 fn check_transform(
-    old_graph: &HashGraph,
+    old_graph: &OriginalGraph,
     new_graph: &HashGraph,
     event_tracker: &CollapseEventTracker,
     transform: &FxHashMap<Node, Vec<OrientedNode>>,
@@ -941,9 +941,9 @@ fn check_transform(
         // not all nodes of the transformation table are "old" nodes, but some have been created
         // by the affix-reduction
         let v = Handle::pack(*vid, false);
-        if old_graph.has_node(v.id()) && old_graph.node_len(v) == *vlen {
+        if let Some(original) = old_graph.sequence(*vid).filter(|seq| seq.len() == *vlen) {
             // make all letters uppercase
-            let old_seq : Vec<u8> = old_graph.sequence_vec(v).into_iter().map(|c| if c > b'Z' { c - 32u8} else { c}).collect();
+            let old_seq : Vec<u8> = original.iter().copied().map(|c| if c > b'Z' { c - 32u8} else { c}).collect();
             let new_seq : Vec<u8> = spell_walk(new_graph, path).into_iter().map(|c| if c > b'Z' { c - 32u8 } else { c}).collect();
             if old_seq != new_seq {
                 panic!(
@@ -961,8 +961,8 @@ fn check_transform(
                     );
             }
             // todo: also check for edges on the other side
-            for u in old_graph.neighbors(v, Direction::Left) {
-                let ulen = old_graph.node_len(u);
+            for u in old_graph.left_neighbors(*vid) {
+                let ulen = old_graph.sequence(u.unpack_number() as usize).unwrap().len();
                 let x = Handle::pack(path[0].0, path[0].1 == Direction::Left);
                 let w = match transform.get(&(u.unpack_number() as usize, ulen)) {
                     Some(w) => if u.is_reverse() {
@@ -1142,18 +1142,85 @@ fn parse_header<R: io::Read>(mut data: io::BufReader<R>) -> Result<Vec<u8>, io::
     Ok(buf)
 }
 
-fn parse_gfa_v12<R: io::Read>(
-    data: io::BufReader<R>,
-) -> (GFA<usize, ()>, FxHashMap<Vec<u8>, Vec<u8>>) {
+// Retain parsed nodes/links, not a second copy of every input line or path.
+fn graph_reader(path: &str) -> io::BufReader<Box<dyn Read>> {
+    let f = fs::File::open(path).expect("Error opening file");
+    let reader: Box<dyn Read> = if path.ends_with(".gz") {
+        Box::new(MultiGzDecoder::new(f))
+    } else { Box::new(f) };
+    io::BufReader::new(reader)
+}
+
+fn parse_gfa_v12<R: io::Read>(data: io::BufReader<R>)
+    -> (GFA<usize, ()>, FxHashMap<Vec<u8>, Vec<u8>>) {
     let parser = GFAParser::new();
-
     let mut walks = FxHashMap::default();
-    let lines: Vec<Vec<u8>> = ByteLineReader::new(data)
-        .map(|x| transform_walks(x, &mut walks))
-        .collect();
-    let gfa: GFA<usize, ()> = parser.parse_lines(lines.iter().map(|x| &x[..])).unwrap();
+    let mut result = GFA::new();
+    for line in ByteLineReader::new(data) {
+        let line = transform_walks(line, &mut walks);
+        if parser.ignore_line(&line) { continue; }
+        match parser.parse_gfa_line(&line) {
+            Ok(Line::Path(_)) => (),
+            Ok(record) => result.insert_line(record),
+            Err(error) if error.can_safely_continue(&ParserTolerance::default()) => (),
+            Err(error) => panic!("{:?}", error),
+        }
+        // P/W records are read again when needed; preserve global W metadata.
+    }
+    (result, walks)
+}
 
-    (gfa, walks)
+fn visit_paths<F>(path: &str, mut visit: F) -> Result<(), Box<dyn Error>>
+where F: FnMut(&GFA<usize, ()>) -> Result<(), Box<dyn Error>> {
+    let parser = GFAParser::new();
+    let mut walks = FxHashMap::default();
+    for line in ByteLineReader::new(graph_reader(path)) {
+        if !matches!(line.first(), Some(b'P') | Some(b'W')) { continue; }
+        let line = transform_walks(line, &mut walks);
+        let one: GFA<usize, ()> = parser.parse_lines(std::iter::once(&line[..])).unwrap();
+        visit(&one)?;
+    }
+    Ok(())
+}
+
+// Immutable, compact original sequence/left-adjacency data for the SAME checks.
+// No second mutable HashGraph and no retained original GFA after construction.
+struct OriginalGraph {
+    nodes: Vec<(usize, usize, usize)>,
+    sequence: Vec<u8>,
+    incoming: Vec<(usize, Handle)>,
+}
+impl OriginalGraph {
+    fn new(gfa: &GFA<usize, ()>) -> Self {
+        let mut nodes = Vec::with_capacity(gfa.segments.len());
+        let mut sequence = Vec::with_capacity(gfa.segments.iter().map(|s| s.sequence.len()).sum());
+        for segment in &gfa.segments {
+            nodes.push((segment.name, sequence.len(), segment.sequence.len()));
+            sequence.extend_from_slice(&segment.sequence);
+        }
+        nodes.sort_unstable_by_key(|n| n.0);
+        assert!(nodes.windows(2).all(|w| w[0].0 != w[1].0), "duplicate segment ID");
+        let mut incoming = Vec::with_capacity(gfa.links.len());
+        for link in &gfa.links {
+            let u = Handle::pack(link.from_segment, link.from_orient == Orientation::Backward);
+            let v = Handle::pack(link.to_segment, link.to_orient == Orientation::Backward);
+            if !v.is_reverse() { incoming.push((v.unpack_number() as usize, u)); }
+            if u.is_reverse() { incoming.push((u.unpack_number() as usize, v.flip())); }
+        }
+        incoming.sort_unstable();
+        incoming.dedup();
+        Self { nodes, sequence, incoming }
+    }
+    fn sequence(&self, id: usize) -> Option<&[u8]> {
+        self.nodes.binary_search_by_key(&id, |n| n.0).ok().map(|i| {
+            let (_, offset, length) = self.nodes[i];
+            &self.sequence[offset..offset + length]
+        })
+    }
+    fn left_neighbors(&self, id: usize) -> impl Iterator<Item=Handle> + '_ {
+        let start = self.incoming.partition_point(|e| e.0 < id);
+        self.incoming[start..].iter().take_while(move |e| e.0 == id).map(|e| e.1)
+    }
 }
 
 fn main() -> Result<(), io::Error> {
@@ -1198,17 +1265,18 @@ fn main() -> Result<(), io::Error> {
         Box::new(f)
     };
 
-    let (mut gfa, walks) = parse_gfa_v12(io::BufReader::new(reader));
+    let (gfa, walks) = parse_gfa_v12(io::BufReader::new(reader));
 
     //
     // REMOVING PATHS FROM GRAPH -- they SUBSTANTIALLY slow down graph editing
     //
     //
-    let mut paths = Vec::new();
-    std::mem::swap(&mut gfa.paths, &mut paths);
+
 
     log::info!("constructing handle graph");
     let mut graph = HashGraph::from_gfa(&gfa);
+    let original = if params.check_transformation { Some(OriginalGraph::new(&gfa)) } else { None };
+    drop(gfa);
 
     log::info!(
         "handlegraph has {} nodes and {} edges",
@@ -1231,7 +1299,8 @@ fn main() -> Result<(), io::Error> {
             params.no_collapse_path
         );
         let re = Regex::new(&params.no_collapse_path).unwrap();
-        for path in paths.iter() {
+        visit_paths(&params.graph, |one| {
+          for path in one.paths.iter() {
             let path_name = str::from_utf8(&path.path_name[..]).unwrap();
             if re.is_match(path_name) {
                 dont_collapse_nodes.extend(
@@ -1246,7 +1315,9 @@ fn main() -> Result<(), io::Error> {
                 );
                 c += 1;
             }
-        }
+          }
+          Ok(())
+        }).unwrap();
         log::info!(
             "found {} no-collapse-paths with a total number of {} nodes matching regular rexpression \"{}\"",
             c,
@@ -1295,10 +1366,11 @@ fn main() -> Result<(), io::Error> {
     if params.check_transformation {
         log::info!("checking correctness of applied transformations...");
 
-        let old_graph = HashGraph::from_gfa(&gfa);
-        check_transform(&old_graph, &graph, &event_tracker, &transform, &del_subg);
+        check_transform(original.as_ref().unwrap(), &graph, &event_tracker, &transform, &del_subg);
         log::info!("all correct!");
     }
+
+    drop(original);
 
     if !params.transformation_out.is_empty() {
         log::info!("writing transformations to {}", params.transformation_out);
@@ -1361,10 +1433,11 @@ fn main() -> Result<(), io::Error> {
     }
 
     // swap paths back in to produce final output
-    std::mem::swap(&mut gfa.paths, &mut paths);
+
     log::info!("transforming paths+walks");
-    if let Err(e) = parse_and_transform_paths(&gfa, &node_lens, &transform, &walks, &mut graph_out)
-    {
+    if let Err(e) = visit_paths(&params.graph, |one| {
+        parse_and_transform_paths(one, &node_lens, &transform, &walks, &mut graph_out)
+    }) {
         panic!(
             "unable to write refined GFA path+walk lines to {}: {}",
             params.refined_graph_out, e
